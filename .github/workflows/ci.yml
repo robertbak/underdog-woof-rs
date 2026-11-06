@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: format
+        run: cargo fmt --all -- --check
+
+      - name: clippy, all targets, warnings are errors
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --release
+
+      # the GPU back-end is a separate dependency tree, so it gets a compile-only check rather than
+      # doubling every other step (there is no GPU on a hosted runner)
+      - name: clippy with the GPU back-end
+        run: cargo clippy --all-targets --features gpu-resident -- -D warnings
+
+      # the normaliser is checked byte-for-byte against the reference's output, recorded as a corpus:
+      # this is the job that catches a rule-order regression in the port
+      - name: normaliser against the reference corpus (317 cases)
+        run: |
+          cargo build --release
+          WOOF_RS_BIN="$PWD/target/release/woof-rs" python3 tools/normalise_diff.py
+
+      - name: binary size
+        run: |
+          size=$(stat -c %s target/release/woof-rs)
+          echo "woof-rs: $((size / 1024)) KiB"
+          test "$size" -lt 20000000

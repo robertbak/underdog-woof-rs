@@ -1,0 +1,5 @@
+# Benchmark builds for this host may use its full instruction set. Cross builds must NOT: a
+# `[build] rustflags` entry would apply host (x86) CPU flags to aarch64 code, so the flags are
+# scoped per target and the ARM kernels use runtime feature detection instead.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]

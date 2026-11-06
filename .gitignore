@@ -1,0 +1,5 @@
+/target
+
+# run artefacts: the CLI defaults to out.wav, and players leave files behind
+*.wav
+*.pcm

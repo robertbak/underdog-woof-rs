@@ -1,0 +1,50 @@
+[package]
+name = "woof-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Rust port of Underdog Woof: a 38 MB int8 text-to-speech model, streaming, on one CPU core"
+license = "LicenseRef-Underdog-NonCommercial-1.0"
+readme = "README.md"
+repository = "https://github.com/robertbak/underdog-woof-rs"
+keywords = ["tts", "text-to-speech", "int8", "inference", "streaming"]
+categories = ["multimedia::audio", "science", "command-line-utilities"]
+
+[dependencies]
+# fancy-regex understands lookaround/backrefs, which the reference normaliser uses throughout
+# (63 lookaround constructs); the plain `regex` crate rejects them.
+fancy-regex = "0.17"
+ndarray = { version = "0.16", features = ["rayon"] }
+rayon = "1.12"
+serde_json = "1"
+tiny_http = "0.12.0"
+unicode-normalization = "0.1.26"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Optional GPU back-end. The CPU build stays at ~0.9 MiB; linking wgpu takes the Android
+# binary to ~5.6 MiB, so it is off unless asked for.
+[dependencies.wgpu]
+version = "30.0.1"
+optional = true
+
+[dependencies.pollster]
+version = "1.0.1"
+optional = true
+
+[features]
+default = []
+gpu = ["dep:wgpu", "dep:pollster"]
+# whole decoder stack resident on the device: every stage verified at 129-468 dB vs CPU, wins on a
+# discrete GPU, loses on mobile-class ones (see README's GPU scope)
+gpu-resident = ["gpu"]
+
+[[bin]]
+name = "woof-rs"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
