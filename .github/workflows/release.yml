@@ -1,0 +1,129 @@
+name: release
+
+# Binaries on a tag. The weights are not shipped (they are generated from an upstream checkout by
+# tools/export.py, and they are not ours to redistribute), so a release is the binary plus the
+# licence: LICENSE and NOTICE ride along in every archive, as the licence requires.
+#
+# Android is deliberately absent: building for aarch64-linux-android needs the NDK and produces a
+# binary that only makes sense pushed to a device. The README documents that build instead.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # static: runs anywhere, including older glibc and the kind of NAS this was tuned on
+          - target: x86_64-unknown-linux-musl
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            use_cross: true
+          # glibc: what a normal desktop distribution expects (and gets a slightly faster matmul
+          # from the system allocator/BLAS-free path being the same, but familiar packaging)
+          - target: x86_64-unknown-linux-gnu
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            use_cross: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # houseabsolute/actions-rust-cross handles the musl toolchain and the aarch64 gcc that a
+      # cross build of this crate needs
+      - name: build (cross)
+        if: matrix.use_cross
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--release --locked"
+
+      - name: build (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: package
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          name="woof-rs-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          install -m755 "target/${{ matrix.target }}/release/woof-rs" "dist/${name}/woof-rs"
+          cp LICENSE NOTICE README.md "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          # a static binary is the point of the musl rows; make sure it really is one
+          file "dist/${name}/woof-rs"
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            file "dist/${name}/woof-rs" | grep -q "statically linked"
+          fi
+          ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          cat "dist/${name}.tar.gz.sha256"
+
+      - name: smoke test
+        # run it on the runner when the target matches the runner, so a broken release cannot ship
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          ./target/x86_64-unknown-linux-gnu/release/woof-rs --version
+          ./target/x86_64-unknown-linux-gnu/release/woof-rs --normalise "1,250 on March 3rd" | head -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  publish:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: list
+        run: ls -l assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/*.tar.gz
+            assets/*.sha256
+          generate_release_notes: true
+          body: |
+            Prebuilt `woof-rs` binaries.
+
+            **The model weights are not included.** They are generated from an upstream Underdog
+            Woof checkout and are not ours to redistribute:
+
+            ```bash
+            python tools/export.py --repo /path/to/underdog_woof --out ./models/woof-i8
+            ./woof-rs --model ./models/woof-i8 "Your order ships on March 3rd." --out hi.wav
+            ```
+
+            Every archive carries `LICENSE` and `NOTICE` unchanged. This is a Derivative work under
+            the Underdog Non-Commercial License 1.0: non-commercial use only, with credit; commercial
+            use needs a licence from Underdog. Not affiliated with or endorsed by Underdog.
