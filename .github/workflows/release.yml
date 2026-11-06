@@ -76,7 +76,8 @@ jobs:
           # a static binary is the point of the musl rows; make sure it really is one
           file "dist/${name}/woof-rs"
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
-            file "dist/${name}/woof-rs" | grep -q "statically linked"
+            # musl builds come out static-pie, which is what we want: no interpreter, no libc
+            file "dist/${name}/woof-rs" | grep -Eq "statically linked|static-pie linked"
           fi
           ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
           cat "dist/${name}.tar.gz.sha256"

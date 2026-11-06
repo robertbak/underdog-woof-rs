@@ -48,3 +48,6 @@ path = "src/main.rs"
 opt-level = 3
 lto = true
 codegen-units = 1
+# a 4.5 MiB binary with symbols is a 3.4 MiB binary without; the backtraces this loses are not worth
+# 25% of a release download
+strip = "symbols"
