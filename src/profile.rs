@@ -24,14 +24,18 @@ pub enum Part {
     Flow,
     /// the voice+text prefix pass
     Prefix,
+    /// materialising a whole weight matrix as f32 (`Linear::to_dense`) — a hypothesis to test, not a
+    /// category we want to keep
+    Dense,
 }
 
-const PARTS: [Part; 5] = [
+const PARTS: [Part; 6] = [
     Part::Matvec,
     Part::Attention,
     Part::Elementwise,
     Part::Flow,
     Part::Prefix,
+    Part::Dense,
 ];
 
 fn index(part: Part) -> usize {
@@ -41,17 +45,20 @@ fn index(part: Part) -> usize {
         Part::Elementwise => 2,
         Part::Flow => 3,
         Part::Prefix => 4,
+        Part::Dense => 5,
     }
 }
 
-static NANOS: [AtomicU64; 5] = [
+static NANOS: [AtomicU64; 6] = [
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static HITS: [AtomicU64; 5] = [
+static HITS: [AtomicU64; 6] = [
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),

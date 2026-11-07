@@ -5,46 +5,7 @@
 //! Abramowitz & Stegun 7.1.26 because numpy has none. All three are reproduced here, since
 //! anything else shifts the output by a few dB of SNR.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use ndarray::{Array1, Array2};
-
-/// Whether matrix-vector products may quantise their activations to int8 (W8A8).
-///
-/// Off by default: the reference multiplies dequantised f32 weights by f32 activations, and matching
-/// it is the point of the port. On, the weights stay int8 *and* the activation is quantised, so the
-/// product accumulates in i32 and no f32 copy of the weight row is ever materialised -- 4x less
-/// memory traffic on the side that is actually bound. The cost is accuracy, measured with
-/// `tools/parity.py`, not assumed.
-///
-/// A process-global rather than a parameter: `matvec` is called from a dozen places inside the
-/// speech model, and this is set once before any synthesis starts.
-static W8A8: AtomicBool = AtomicBool::new(false);
-
-pub fn set_w8a8(enabled: bool) {
-    W8A8.store(enabled, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn w8a8() -> bool {
-    W8A8.load(Ordering::Relaxed)
-}
-
-/// Symmetric per-vector int8 quantisation: the scale is `max|x| / 127`, so the largest magnitude maps
-/// to -127 or 127 and everything else keeps the mantissa the range allows.
-pub fn quantise_vector(x: &[f32]) -> (Vec<i8>, f32) {
-    let amax = x.iter().fold(0f32, |m, v| m.max(v.abs()));
-    if amax == 0.0 {
-        return (vec![0i8; x.len()], 0.0);
-    }
-    let scale = amax / 127.0;
-    let inv = 1.0 / scale;
-    let q = x
-        .iter()
-        .map(|v| (v * inv).round().clamp(-127.0, 127.0) as i8)
-        .collect();
-    (q, scale)
-}
 
 /// numpy's `np.finfo(np.float32).eps`, used by `Speech._rinv`.
 pub const F32_EPS: f32 = 1.192_092_9e-7;
@@ -351,33 +312,6 @@ pub fn dequantise_row(q: &[i8], scale: f32, out: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quantise_vector_bounds_the_error_by_half_a_step() {
-        let x: Vec<f32> = (0..512)
-            .map(|i| ((i as f32 * 0.37).sin() * 1.7) + 0.05)
-            .collect();
-        let (q, scale) = quantise_vector(&x);
-        assert_eq!(q.len(), x.len());
-        assert!(scale > 0.0);
-        // every element is within half a quantisation step of where it came from
-        for (orig, qi) in x.iter().zip(q.iter()) {
-            let back = f32::from(*qi) * scale;
-            assert!(
-                (orig - back).abs() <= scale * 0.5 + 1e-6,
-                "{orig} -> {back} (step {scale})"
-            );
-        }
-        // and the largest magnitude actually reaches the top of the range
-        assert_eq!(q.iter().map(|v| v.unsigned_abs()).max(), Some(127));
-    }
-
-    #[test]
-    fn quantise_vector_handles_an_all_zero_activation() {
-        let (q, scale) = quantise_vector(&[0.0; 8]);
-        assert!(q.iter().all(|v| *v == 0));
-        assert_eq!(scale, 0.0);
-    }
 
     #[test]
     fn softmax_rows_sum_to_one() {

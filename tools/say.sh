@@ -3,7 +3,6 @@
 #
 #   say "Your order ships on March 3rd."          # bare text, or --text "..."
 #   say --responsive "Longer text, heard quickly."  # flags and text together
-#   say --w8a8 "Faster, a different take."          # int8 activations: ~40% faster (see README)
 #   echo "Piped text." | say                        # or a whole file: cat notes.txt | say
 #   tools/say.sh --voice mira --text "…"            # from the repo, same script
 #

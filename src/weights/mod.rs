@@ -337,11 +337,6 @@ impl Linear {
         if let Linear::F32(w) = self {
             return w.dot(x);
         }
-        if crate::nn::w8a8() {
-            if let Linear::Int8 { q, scales } = self {
-                return int8_matvec(q, scales, x);
-            }
-        }
 
         // int8 weights against f32 activations, dequantised a tile at a time into a stack buffer.
         //
@@ -405,46 +400,6 @@ thread_local! {
     /// ends. A matvec runs tens of times per frame, so allocating this per call was most of the
     /// per-frame allocation churn.
     static SCRATCH: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// W8A8: quantise the activation once, then accumulate each row as i32 and scale once at the end.
-///
-/// `sum(q_w * q_x)` is exact in i32 (the longest reduction here is 3584, the largest product
-/// 127*127), so the only error is the two quantisations. The weight row is read as int8 and never
-/// expanded to f32, which is where the f32 path loses: it wrote `cols` floats per output row into
-/// scratch and read them straight back.
-fn int8_matvec(q: &Array2<i8>, scales: &Array1<f32>, x: &Array1<f32>) -> Array1<f32> {
-    use rayon::prelude::*;
-
-    let (rows, cols) = q.dim();
-    let activation = x.as_slice().expect("dense activation");
-    let (qx, a_scale) = crate::nn::quantise_vector(activation);
-    let mut out = vec![0f32; rows];
-
-    let row_dot = |row: usize| -> f32 {
-        let w = q.row(row);
-        let w = w.as_slice().expect("dense row");
-        let mut acc = 0i32;
-        for (a, b) in w.iter().zip(qx.iter()) {
-            acc += i32::from(*a) * i32::from(*b);
-        }
-        acc as f32 * scales[row] * a_scale
-    };
-
-    if rows * cols < 200_000 {
-        for (row, slot) in out.iter_mut().enumerate() {
-            *slot = row_dot(row);
-        }
-    } else {
-        out.par_chunks_mut(32)
-            .enumerate()
-            .for_each(|(chunk_index, chunk)| {
-                for (k, slot) in chunk.iter_mut().enumerate() {
-                    *slot = row_dot(chunk_index * 32 + k);
-                }
-            });
-    }
-    Array1::from(out)
 }
 
 /// A grouped-int8 decoder tensor: `(rows, n)` int8 with `(rows, groups)` scales over `group`
@@ -581,32 +536,6 @@ mod tests {
         assert_eq!(dense[[0, 3]], 8.0);
         assert_eq!(dense[[1, 0]], -0.25);
         assert_eq!(dense[[1, 5]], -6.0);
-    }
-
-    #[test]
-    fn w8a8_matvec_tracks_the_f32_one() {
-        let (rows, cols) = (64usize, 512usize);
-        let mut seed = 12345u32;
-        let mut next = || {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
-        };
-        let q = Array2::from_shape_fn((rows, cols), |_| (next() * 100.0) as i8);
-        let scales = Array1::from_shape_fn(rows, |_| 0.01 + 0.01 * next().abs());
-        let x = Array1::from_shape_fn(cols, |_| next());
-        let exact = Linear::Int8 {
-            q: q.clone(),
-            scales: scales.clone(),
-        }
-        .matvec(&x);
-        let quantised = int8_matvec(&q, &scales, &x);
-        let (mut num, mut den) = (0f64, 0f64);
-        for (a, b) in exact.iter().zip(quantised.iter()) {
-            num += ((a - b) as f64).powi(2);
-            den += (*a as f64).powi(2);
-        }
-        let snr = 10.0 * (den / num.max(1e-12)).log10();
-        assert!(snr > 40.0, "W8A8 vs f32 matvec: {snr:.1} dB");
     }
 
     #[test]

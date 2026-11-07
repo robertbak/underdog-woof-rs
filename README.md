@@ -344,37 +344,21 @@ counted as cores. Intel hybrid x86 reports `cpu_capacity = 1024` for every core 
 enables ITMT, which is why the topology fallback exists (and clock-rate filtering does not work:
 E-cores at 4.0 GHz are 0.755 of the P-cores' 5.3).
 
-## `--w8a8`: int8 activations, and what it costs
+## Removed: `--w8a8`
 
-The weights are int8 everywhere, but the *activations* are f32, so a matvec dequantises each weight
-row into a scratch buffer and accumulates in f32 — which is what the reference does, and why parity
-holds. `--w8a8` quantises the activation to int8 as well (one symmetric per-vector scale,
-`max|x|/127`), so the product accumulates in **i32** and the weight row is never expanded: 4x less
-memory traffic on the side that is actually bound. It is off by default.
+There was a flag that quantised the *activations* to int8 as well, so the matvec accumulated in i32 and
+never expanded a weight row to f32. It did what it said — 6.2x to 8.6x realtime at the time — but it
+changed the take, because quantising activations changes the sampling path at the first frame.
+
+After the AVX2/NEON kernel landed, the default path does the same job faster than it does:
 
 ```
-threads 4, 10-text corpus     throughput     median first audio
-f32 activations (default)     6.2x realtime  0.19 s
---w8a8                        8.6x realtime  0.16 s
+default  8.7x / 9.7x        --w8a8  9.3x / 9.0x     (interleaved, i.e. noise)
 ```
 
-**It does not preserve parity, and it cannot.** Quantising activations changes the sampling path at
-the very first frame, and the autoregressive loop amplifies that: against numpy the latents fall from
-85.3 dB to 38.7 dB and the takes diverge at frame 1 instead of frame 71. That is not damage, it is a
-different draw — measured against its own f32 output, `--w8a8` at the same seed tracks *closer*
-(energy-envelope correlation 0.81, duration ratio 0.993) than the f32 model does against a different
-seed (0.58). Same words, same length, sibling performance.
-
-So this is a knob for throughput, not a quality setting: use it when you want 40% more speed and can
-accept a different (not obviously worse) take. Whether it sounds as good is a listening judgement and
-this README will not pretend to have made it. The kernel's own error is bounded by construction — a
-unit test pins `int8_matvec` against the f32 path at better than 40 dB — so anything you hear is the
-sampler's sensitivity, not arithmetic sloppiness.
-
-i32 is the accumulator for a reason worth writing down: an i8×i8 product is exact and fits i16
-(127×127 = 16129), but the *sum* overflows i16 after two terms. i32 holds ~133,000 maximal terms, and
-the longest reduction here is 3584 — and `vpmaddubsw`/`vpdpbusd`/`SDOT` give i8→i32 multiply-accumulate
-in one instruction, which is why the format is specified that way.
+So the flag was removed rather than left as a trap: it cost fidelity for no throughput. The kernel
+change that replaced it keeps f32 activations, so the take stays close to the reference — parity
+improved to 90.5 dB rather than drifting.
 
 ## Address space vs memory (`--malloc-arenas`)
 
@@ -674,7 +658,7 @@ Useful flags: `--voice mira`, `--seed N` (same text + seed is byte-identical), `
 `--first-max N`, `--max-chars N` (0 = no limit), `--cpu-mask 3,4,5,6,7`, `--timings`,
 `--verbose` (emission log), `--dump-latents`, `--dump-tensor NAME PATH`, `--bench-dot`,
 `--features gpu --bench-gpu`, `--features gpu-resident --gpu-resident`, `--verify-gpu`,
-`--serve --port N`, `--w8a8`, `--offline`.
+`--serve --port N`, `--offline`, `--verbose`.
 
 Diagnostics: `WOOF_DUMP_STAGES=<dir>` writes the decoder's transformer output and every stage
 output as raw f32, which is how each parity regression so far was localised; `--timings` splits each

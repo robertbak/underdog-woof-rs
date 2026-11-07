@@ -18,7 +18,10 @@ frames, `--retries 0`:
 
 allocations: **6,880 per frame, 14.4 MiB per frame** (at 4 threads: 7,701 and 15.9 MiB).
 
-## With `--w8a8` (int8 activations)
+## With int8 activations (`--w8a8`, a flag since removed)
+
+Kept as the measurement that motivated the fused kernel: it showed the matvec was dequantise-bound.
+The flag itself was removed once the AVX2/NEON path made it redundant — see the README.
 
 | part | 1 thread | share | calls/frame | µs/call |
 |---|---|---|---|---|

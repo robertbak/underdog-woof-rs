@@ -21,8 +21,6 @@ OPTIONS:
                            prefix written by tools/export.py -> .bin + .json.
                            Omitted: the cached download is used, and fetched if absent
     --offline              never download; fail if the weights are not already cached
-    --w8a8                 quantise activations to int8 too, so matvecs accumulate in i32 (less
-                           memory traffic, less accuracy: see README)
     --voice <NAME>         juno | mira (default: juno)
     --seed <N>             sampler seed (default: 0); same text + seed -> identical audio
     --temp <F>             sampling temperature (default: 0.5)
@@ -88,7 +86,6 @@ pub struct Args {
     pub sampling: Sampling,
     pub threads: usize,
     pub offline: bool,
-    pub w8a8: bool,
     pub verbose: bool,
     pub malloc_arenas: usize,
     pub max_chars: usize,
@@ -130,7 +127,6 @@ impl Default for Args {
             // four: synthesis must beat playback with room to spare (see --threads)
             threads: 4,
             offline: false,
-            w8a8: false,
             verbose: false,
             malloc_arenas: 0,
             max_chars: 0,
@@ -194,7 +190,6 @@ pub fn parse_args() -> Result<Option<Args>> {
             "--out" => args.out = PathBuf::from(value()?),
             "--model" => args.model = Some(PathBuf::from(value()?)),
             "--offline" => args.offline = true,
-            "--w8a8" => args.w8a8 = true,
             "--voice" => args.voice = value()?,
             "--seed" => args.seed = value()?.parse().map_err(|_| "--seed expects a number")?,
             "--temp" => {

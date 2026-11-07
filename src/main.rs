@@ -55,9 +55,6 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    if std::env::args().any(|a| a == "--w8a8") {
-        woof_rs::nn::set_w8a8(true);
-    }
     let Some(mut args) = parse_args()? else {
         return Ok(());
     };

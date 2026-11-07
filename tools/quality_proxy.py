@@ -133,7 +133,7 @@ def main():
     ap.add_argument("--record", help="write a baseline here")
     ap.add_argument("--against", help="compare a fresh run against this baseline")
     ap.add_argument("--repo", help="reference checkout, to run tools/parity.py")
-    ap.add_argument("--extra", default="", help="flags for the synthesiser, e.g. '--w8a8'")
+    ap.add_argument("--extra", default="", help="extra flags for the synthesiser, e.g. '--threads 8'")
     ap.add_argument("--skip-tools", action="store_true", help="audio checks only")
     ap.add_argument("--python", default=sys.executable,
                     help="interpreter for the correctness tools (needs numpy; default: this one)")
