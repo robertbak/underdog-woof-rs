@@ -190,18 +190,27 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
 
 /// Whether the fused int8×f32 dot can run on AVX2/FMA (x86_64 only).
 pub fn simd_dot_available() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *AVAILABLE.get_or_init(|| {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        // `WOOF_NO_SIMD=1` forces the portable path, which is how the vector kernel gets A/B'd against
+        // it on the device that actually runs it (aarch64 cannot be checked from an x86 host).
+        if std::env::var_os("WOOF_NO_SIMD").is_some() {
+            return false;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
             std::arch::is_x86_feature_detected!("avx2")
                 && std::arch::is_x86_feature_detected!("fma")
-        })
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::arch::is_aarch64_feature_detected!("neon")
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            false
+        }
+    })
 }
 
 /// `scale · Σ q_i · x_i`, dequantising in registers.
@@ -212,13 +221,15 @@ pub fn simd_dot_available() -> bool {
 /// the same thing in portable Rust made it *slower* (213 µs) because the per-element widen defeated
 /// the vectoriser. This is the same idea with the vector instructions written down.
 pub fn dot_i8_scaled(q: &[i8], x: &[f32], scale: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if simd_dot_available() {
-            // SAFETY: `simd_dot_available` checked AVX2 and FMA on this CPU; the loads are bounded
-            // by the loop conditions against the shorter slice.
-            return unsafe { dot_i8_scaled_avx2(q, x, scale) };
-        }
+    if simd_dot_available() {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: `simd_dot_available` checked AVX2 and FMA on this CPU; the loads are bounded by
+        // the loop conditions against the shorter slice.
+        return unsafe { dot_i8_scaled_avx2(q, x, scale) };
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: NEON is baseline on aarch64 and was checked by `simd_dot_available`; the loads are
+        // bounded by the loop conditions against the shorter slice.
+        return unsafe { dot_i8_scaled_neon(q, x, scale) };
     }
     let n = q.len().min(x.len());
     let mut sum = 0f32;
@@ -268,6 +279,36 @@ unsafe fn dot_i8_scaled_avx2(q: &[i8], x: &[f32], scale: f32) -> f32 {
     let s2 = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
     let s1 = _mm_add_ss(s2, _mm_shuffle_ps(s2, s2, 1));
     let mut sum = _mm_cvtss_f32(s1);
+    while i < n {
+        sum += f32::from(*qp.add(i)) * *xp.add(i);
+        i += 1;
+    }
+    sum * scale
+}
+
+/// NEON equivalent of the AVX2 kernel: widen 8 int8 to int32 in two halves, convert to f32, FMA.
+///
+/// `vmovl_s8` -> `vmovl_s16` twice (low/high) -> `vcvtq_f32_s32` -> `vfmaq_f32`, against two 4-lane
+/// accumulators, then one `vaddvq_f32` at the end.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_i8_scaled_neon(q: &[i8], x: &[f32], scale: f32) -> f32 {
+    use std::arch::aarch64::*;
+
+    let n = q.len().min(x.len());
+    let (mut acc0, mut acc1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+    let (qp, xp) = (q.as_ptr(), x.as_ptr());
+    let mut i = 0;
+    while i + 8 <= n {
+        let bytes = vld1_s8(qp.add(i));
+        let widened = vmovl_s8(bytes);
+        let lo = vcvtq_f32_s32(vmovl_s16(vget_low_s16(widened)));
+        let hi = vcvtq_f32_s32(vmovl_s16(vget_high_s16(widened)));
+        acc0 = vfmaq_f32(acc0, lo, vld1q_f32(xp.add(i)));
+        acc1 = vfmaq_f32(acc1, hi, vld1q_f32(xp.add(i + 4)));
+        i += 8;
+    }
+    let mut sum = vaddvq_f32(vaddq_f32(acc0, acc1));
     while i < n {
         sum += f32::from(*qp.add(i)) * *xp.add(i);
         i += 1;

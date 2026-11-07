@@ -284,14 +284,19 @@ claimed.
 **On ARM the gain is smaller, and measured.** The Galaxy Tab S9 (aarch64, 4 threads, interleaved
 against the same binary built from the previous tag):
 
-| | before (v0.1.2) | after |
-|---|---|---|
-| bench corpus | 3.2-3.3x realtime (15.7-16.0 s) | **3.8-3.9x** (13.2-13.5 s) |
-| first audio | 0.33 / 0.35 / 0.41 s | 0.31 / 0.35 / 0.41 s |
+| | before (v0.1.2) | after tiling + overlap | after + NEON |
+|---|---|---|---|
+| bench corpus | 3.2-3.3x (15.7-16.0 s) | 3.8-3.9x (13.2-13.5 s) | **4.6-4.7x** (10.9-11.1 s) |
+| first audio (min / median / max) | 0.33 / 0.35 / 0.41 s | 0.31 / 0.35 / 0.41 s | **0.25 / 0.30 / 0.36 s** |
 
-That is +19% rather than +65%, as expected: the AVX2 kernel is x86_64-only, so the tablet gets only the
-tiled dequantise and the decoder overlap. The NEON equivalent (widen `int8x8` to `int32x8`, convert,
-`vfmaq_f32`) is the obvious next step there — the x86 version of exactly that change was worth 30%.
+So the tablet ends up **+45%** against **+65%** on the desktop, and the gap is the ISA, not the work:
+two thirds of the ARM gain came from the NEON kernel, which is the same idea as the AVX2 one written
+with `vmovl_s8`/`vcvtq_f32_s32`/`vfmaq_f32`. It also cut first audio by 14% on the tablet, because the
+first chunk's matvecs are shorter.
+
+Verified on the device rather than trusted: `WOOF_NO_SIMD=1` forces the portable path, and NEON against
+it at the same seed is **1 LSB apart (82.9 dB)** — float summation order, not a wrong answer. That flag
+exists for exactly this, since aarch64 cannot be executed from the x86 dev machine.
 
 The other gap: the N150 NAS measured 1.4x against 1.3x before at a *different* load, which is no
 regression but not a clean comparison either.
