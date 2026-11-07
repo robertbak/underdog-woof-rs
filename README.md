@@ -280,6 +280,38 @@ counted as cores. Intel hybrid x86 reports `cpu_capacity = 1024` for every core 
 enables ITMT, which is why the topology fallback exists (and clock-rate filtering does not work:
 E-cores at 4.0 GHz are 0.755 of the P-cores' 5.3).
 
+## `--w8a8`: int8 activations, and what it costs
+
+The weights are int8 everywhere, but the *activations* are f32, so a matvec dequantises each weight
+row into a scratch buffer and accumulates in f32 — which is what the reference does, and why parity
+holds. `--w8a8` quantises the activation to int8 as well (one symmetric per-vector scale,
+`max|x|/127`), so the product accumulates in **i32** and the weight row is never expanded: 4x less
+memory traffic on the side that is actually bound. It is off by default.
+
+```
+threads 4, 10-text corpus     throughput     median first audio
+f32 activations (default)     6.2x realtime  0.19 s
+--w8a8                        8.6x realtime  0.16 s
+```
+
+**It does not preserve parity, and it cannot.** Quantising activations changes the sampling path at
+the very first frame, and the autoregressive loop amplifies that: against numpy the latents fall from
+85.3 dB to 38.7 dB and the takes diverge at frame 1 instead of frame 71. That is not damage, it is a
+different draw — measured against its own f32 output, `--w8a8` at the same seed tracks *closer*
+(energy-envelope correlation 0.81, duration ratio 0.993) than the f32 model does against a different
+seed (0.58). Same words, same length, sibling performance.
+
+So this is a knob for throughput, not a quality setting: use it when you want 40% more speed and can
+accept a different (not obviously worse) take. Whether it sounds as good is a listening judgement and
+this README will not pretend to have made it. The kernel's own error is bounded by construction — a
+unit test pins `int8_matvec` against the f32 path at better than 40 dB — so anything you hear is the
+sampler's sensitivity, not arithmetic sloppiness.
+
+i32 is the accumulator for a reason worth writing down: an i8×i8 product is exact and fits i16
+(127×127 = 16129), but the *sum* overflows i16 after two terms. i32 holds ~133,000 maximal terms, and
+the longest reduction here is 3584 — and `vpmaddubsw`/`vpdpbusd`/`SDOT` give i8→i32 multiply-accumulate
+in one instruction, which is why the format is specified that way.
+
 ## Address space vs memory (`--malloc-arenas`)
 
 `VmSize` is address space, not memory use. This process measured 1723 MiB of VmSize against 67 MiB
@@ -578,7 +610,7 @@ Useful flags: `--voice mira`, `--seed N` (same text + seed is byte-identical), `
 `--first-max N`, `--max-chars N` (0 = no limit), `--cpu-mask 3,4,5,6,7`, `--timings`,
 `--verbose` (emission log), `--dump-latents`, `--dump-tensor NAME PATH`, `--bench-dot`,
 `--features gpu --bench-gpu`, `--features gpu-resident --gpu-resident`, `--verify-gpu`,
-`--serve --port N`.
+`--serve --port N`, `--w8a8`, `--offline`.
 
 Diagnostics: `WOOF_DUMP_STAGES=<dir>` writes the decoder's transformer output and every stage
 output as raw f32, which is how each parity regression so far was localised; `--timings` splits each
