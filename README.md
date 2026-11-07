@@ -276,9 +276,15 @@ Quality held: the proxy compares duration, 20 ms energy envelope and level again
 the new summation orders land closer to numpy. `tools/quality_proxy.py` and `benchmarks/profile.md`
 carry the detail; `WOOF_PROFILE=1` reproduces the profile.
 
-What is left, in the profile's terms: attention (25% of a frame, needs a hand-written kernel) and the
-voice/text prefix (5.1 ms per utterance, worth under 4% of first audio). Both are recorded as future
-work rather than claimed.
+What is left, in the profile's terms: attention (25% of a frame, needs a hand-written kernel), the
+voice/text prefix (5.1 ms per utterance, worth under 4% of first audio), and a thread sweep that showed
+nothing (7.0-7.9x for 4, 6 and auto, i.e. noise). All three are recorded as future work rather than
+claimed.
+
+Two coverage gaps stated rather than papered over: the Galaxy Tab S9 was not attached for this round,
+so there is no Android number here (the AVX2 path only applies to x86_64; ARM still uses the tiled
+fallback), and the N150 NAS measured 1.4x against 1.3x before at a *different* load, which is not a
+regression but is not a clean comparison either.
 
 ## Threads: default 4
 
