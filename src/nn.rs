@@ -188,6 +188,93 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     sum
 }
 
+/// Whether the fused int8×f32 dot can run on AVX2/FMA (x86_64 only).
+pub fn simd_dot_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *AVAILABLE.get_or_init(|| {
+            std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma")
+        })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// `scale · Σ q_i · x_i`, dequantising in registers.
+///
+/// Two int8 weights per instruction-pair: load 8 bytes, widen to 8 int32s, convert to f32, FMA
+/// against the activation. That removes the dequantised scratch entirely -- the copy was the cost
+/// (profiling: 156 µs for a 448x1344 block against ~36 µs for the integer kernel), and trying to do
+/// the same thing in portable Rust made it *slower* (213 µs) because the per-element widen defeated
+/// the vectoriser. This is the same idea with the vector instructions written down.
+pub fn dot_i8_scaled(q: &[i8], x: &[f32], scale: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if simd_dot_available() {
+            // SAFETY: `simd_dot_available` checked AVX2 and FMA on this CPU; the loads are bounded
+            // by the loop conditions against the shorter slice.
+            return unsafe { dot_i8_scaled_avx2(q, x, scale) };
+        }
+    }
+    let n = q.len().min(x.len());
+    let mut sum = 0f32;
+    for i in 0..n {
+        sum += f32::from(q[i]) * x[i];
+    }
+    sum * scale
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_i8_scaled_avx2(q: &[i8], x: &[f32], scale: f32) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = q.len().min(x.len());
+    let (mut acc0, mut acc1) = (_mm256_setzero_ps(), _mm256_setzero_ps());
+    let (qp, xp) = (q.as_ptr(), x.as_ptr());
+    let mut i = 0;
+    while i + 16 <= n {
+        let q0 = _mm_loadl_epi64(qp.add(i) as *const __m128i);
+        let q1 = _mm_loadl_epi64(qp.add(i + 8) as *const __m128i);
+        acc0 = _mm256_fmadd_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q0)),
+            _mm256_loadu_ps(xp.add(i)),
+            acc0,
+        );
+        acc1 = _mm256_fmadd_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q1)),
+            _mm256_loadu_ps(xp.add(i + 8)),
+            acc1,
+        );
+        i += 16;
+    }
+    while i + 8 <= n {
+        let q0 = _mm_loadl_epi64(qp.add(i) as *const __m128i);
+        acc0 = _mm256_fmadd_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q0)),
+            _mm256_loadu_ps(xp.add(i)),
+            acc0,
+        );
+        i += 8;
+    }
+    let acc = _mm256_add_ps(acc0, acc1);
+    let hi = _mm256_extractf128_ps(acc, 1);
+    let lo = _mm256_castps256_ps128(acc);
+    let s4 = _mm_add_ps(lo, hi);
+    let s2 = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
+    let s1 = _mm_add_ss(s2, _mm_shuffle_ps(s2, s2, 1));
+    let mut sum = _mm_cvtss_f32(s1);
+    while i < n {
+        sum += f32::from(*qp.add(i)) * *xp.add(i);
+        i += 1;
+    }
+    sum * scale
+}
+
 /// `Σ q_i · x_i` for int8 weights against f32 activations.
 ///
 /// The row scale is applied by the caller *after* the sum, which is the same product as dequantising

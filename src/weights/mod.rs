@@ -356,9 +356,13 @@ impl Linear {
         let (rows, cols) = (self.rows(), self.cols());
         let activation = x.as_slice().expect("dense activation");
         let mut out = vec![0f32; rows];
+        let simd = crate::nn::simd_dot_available();
         let row_dot = |row: usize| -> f32 {
             let w = self.row_slice(row);
             let scale = self.row_scale(row);
+            if simd {
+                return crate::nn::dot_i8_scaled(w, activation, scale);
+            }
             let mut tile = [0f32; TILE];
             let mut acc = 0f32;
             let mut offset = 0;
