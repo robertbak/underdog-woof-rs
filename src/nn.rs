@@ -287,6 +287,36 @@ pub fn dequantise_row(q: &[i8], scale: f32, out: &mut [f32]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fused_dot_matches_a_straightforward_dot() {
+        // The SIMD path is the hot loop of the whole synthesiser and had no test; this pins it against
+        // the obvious scalar product for the shapes the model uses, including a length that is not a
+        // multiple of 8 so the tail runs. (aarch64 cannot be executed from here; the device is checked
+        // with WOOF_NO_SIMD, which forces the portable path.)
+        let mut seed = 0x1234_5678u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+        };
+        for n in [7usize, 8, 9, 63, 448, 1031, 1344 * 3 + 5] {
+            let q: Vec<i8> = (0..n).map(|_| (next() * 120.0) as i8).collect();
+            let x: Vec<f32> = (0..n).map(|_| next()).collect();
+            let scale = 0.017f32;
+            let expected: f32 = q
+                .iter()
+                .zip(x.iter())
+                .map(|(a, b)| f32::from(*a) * b)
+                .sum::<f32>()
+                * scale;
+            let got = dot_i8_scaled(&q, &x, scale);
+            let tolerance = expected.abs() * 1e-4 + 1e-4;
+            assert!(
+                (got - expected).abs() <= tolerance,
+                "n={n}: got {got}, expected {expected}, tolerance {tolerance}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
