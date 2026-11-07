@@ -5,7 +5,7 @@
 //! seconds of silence. [`Voice::stream`] yields the waveform of each utterance as soon as it is
 //! ready, which is what a player or an HTTP endpoint wants.
 
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 
 use crate::decoder::{Decoder, DecoderTimings};
 use crate::quality::{self, Policy as RetryPolicy, Take};
@@ -106,19 +106,74 @@ impl Voice {
 
         let started = std::time::Instant::now();
         let ids = crate::audio::encode_text(text);
-        let mut stream = self.decoder.start_streaming();
+
+        // The decoder runs on its own thread, fed through a bounded queue, so the sampler generates
+        // chunk k+1 while chunk k is being vocoded. Only valid where the take cannot be redrawn (the
+        // first utterance, or attempts = 0): emitting audio while generating forfeits the guard, which
+        // is exactly why the chunked path is single-take in the first place.
+        //
+        // Both channels are bounded: four chunks of latents in, four chunks of samples back (26 latent
+        // frames is 1.04 s of audio, so ~4 s of pending work and ~200 KB of samples at most). Decoded
+        // samples are drained on this thread between chunks, which keeps the sink on its own thread and
+        // keeps emission in order.
+        let (jobs_tx, jobs_rx) = std::sync::mpsc::sync_channel::<Option<Array2<f32>>>(4);
+        let (out_tx, out_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(4);
         let mut collected: Vec<f32> = Vec::new();
-        let latents = self
-            .speech
-            .latents_streaming(&ids, self.sampling, rng, chunk, |frames| {
-                let samples = stream.push(frames, weights)?;
-                let slice = samples.as_slice().unwrap_or(&[]);
-                collected.extend_from_slice(slice);
-                on_samples(slice)?;
-                Ok(())
+        let speech = &mut self.speech;
+        let decoder = &mut self.decoder;
+        let sampling = self.sampling;
+
+        let (latents, timings) =
+            std::thread::scope(|scope| -> Result<(Array2<f32>, (f32, f32))> {
+                let worker = scope.spawn(move || -> Result<(f32, f32)> {
+                    let mut stream = decoder.start_streaming();
+                    while let Ok(job) = jobs_rx.recv() {
+                        let Some(frames) = job else { break };
+                        let samples = stream.push(&frames, weights)?;
+                        out_tx
+                            .send(samples.as_slice().expect("dense samples").to_vec())
+                            .map_err(|_| "the sampler stopped")?;
+                    }
+                    Ok(stream.timings())
+                });
+
+                // For the utterance the listener is actually waiting for, the first chunk is waited for, so
+                // time-to-first-audio does not pay for the overlap. Every other utterance overlaps from its
+                // first chunk: nobody is listening to its start yet, and waiting cost ~50 ms per utterance
+                // of throughput (15 utterances: 7.1 s instead of 5.9 s on the bench corpus).
+                let mut first = index == 0;
+                let produced = speech.latents_streaming(&ids, sampling, rng, chunk, |frames| {
+                    jobs_tx
+                        .send(Some(frames.to_owned()))
+                        .map_err(|_| "the decoder thread stopped")?;
+                    if first {
+                        first = false;
+                        let samples = out_rx.recv().map_err(|_| "the decoder thread stopped")?;
+                        collected.extend_from_slice(&samples);
+                        on_samples(&samples)?;
+                        return Ok(());
+                    }
+                    // otherwise take whatever finished while this chunk was being generated
+                    while let Ok(samples) = out_rx.try_recv() {
+                        collected.extend_from_slice(&samples);
+                        on_samples(&samples)?;
+                    }
+                    Ok(())
+                });
+                // Always end the worker before propagating a sampling error: `thread::scope` joins at the
+                // end of the closure, so returning early through `?` would leave the worker blocked in
+                // recv() and hang. A text too long for the model's tables reaches exactly this path.
+                jobs_tx.send(None).ok();
+                let timings = worker.join().expect("decoder thread panicked")?;
+                let latents = produced?;
+                while let Ok(samples) = out_rx.try_recv() {
+                    collected.extend_from_slice(&samples);
+                    on_samples(&samples)?;
+                }
+                Ok((latents, timings))
             })?;
         let samples = Array1::from(collected);
-        let (transformer, stages) = stream.timings();
+        let (transformer, stages) = timings;
         Ok(Utterance {
             text: text.to_string(),
             duration: samples.len() as f32 / crate::audio::SAMPLE_RATE as f32,
