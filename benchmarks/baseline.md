@@ -1,5 +1,8 @@
 # Baseline before the speed work
 
+**Superseded**: current numbers are in the README section "Speed work (v0.1.3)" and in
+`benchmarks/profile.md`. This file is the reference the quality proxy compares audio against.
+
 Recorded 2026-11-07, before any optimisation, with `v0.1.2`. Every later change is measured against
 these numbers on the same machine; a change that cannot beat them by 5% does not ship.
 

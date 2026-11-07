@@ -243,10 +243,49 @@ plus chunked encoding, and costs four small crates. Streaming is a `Read` implem
 the synthesiser on first read and drains a bounded channel, so a slow client cannot make the server
 buffer a whole utterance.
 
+## Speed work (v0.1.3): +65% throughput, first audio 0.15 -> 0.11 s
+
+Three changes, each measured interleaved against the binary it replaced (the load on this box ranges
+1.4-5.3 depending on what else is running, so absolute numbers are only comparable within a session;
+the deltas are the claim):
+
+| change | what it was | effect |
+|---|---|---|
+| tiled dequantise | the matvec wrote a dequantised row into a heap scratch and read it back; now 256-float tiles in a stack buffer, so the block stays in L1 | +13% |
+| decoder overlap | the decoder (34% of wall time) ran serially behind the sampler; it now runs on a worker thread, fed by a bounded queue, so chunk k+1 is generated while k is vocoded | +13% |
+| AVX2 fused dot | load 8 int8 weights -> widen -> convert -> FMA, no scratch at all | +30% |
+
+```
+bench corpus, 4 threads      baseline 6.3x  ->  8.2-8.6x realtime
+time to first audio (median) 0.15 s        ->  0.11 s
+per-frame cost, 1 thread     8.5 ms        ->  2.8 ms
+peak RSS                     136 MB        ->  141 MB
+```
+
+Measured, not asserted, and three things were rejected on the measurements rather than shipped:
+
+* **per-frame allocation removal** — cut 6,880 allocations/frame to 6,551 and changed wall time by
+  nothing. The allocator is not the bottleneck here.
+* **dequantising inside the dot in portable Rust** — 195 -> 213 µs/call: the per-element `i8 -> f32`
+  widening defeats the vectoriser. The AVX2 version of the same idea is 42 µs/call.
+* **attention via `ndarray` views** (drop the per-head copies) — 95 -> 128 µs/call end to end slower,
+  because `dot` on a view leaves the BLAS path.
+
+Quality held: the proxy compares duration, 20 ms energy envelope and level against the pre-work takes
+(all pass), and correctness improved — decoder parity went 85.3 -> **90.5 dB** over 72 frames because
+the new summation orders land closer to numpy. `tools/quality_proxy.py` and `benchmarks/profile.md`
+carry the detail; `WOOF_PROFILE=1` reproduces the profile.
+
+What is left, in the profile's terms: attention (25% of a frame, needs a hand-written kernel) and the
+voice/text prefix (5.1 ms per utterance, worth under 4% of first audio). Both are recorded as future
+work rather than claimed.
+
 ## Threads: default 4
 
 The default is **four workers**; `--threads 0` asks for auto (one per fast core), and `--threads N`
-pins the count. Measured on the 10-text `--bench` corpus (51 s of audio, desktop i5-14600KF):
+pins the count. Thresholds below are from before the speed work in the section above — current numbers
+are 7.4x at one thread and 8.2-8.6x at four. Measured on the 10-text `--bench` corpus (51 s of audio,
+desktop i5-14600KF):
 
 | threads | throughput | first audio (median) |
 |---|---|---|

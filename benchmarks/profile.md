@@ -73,3 +73,32 @@ so decoder parity improved from 85.3 dB to **86.7 dB** for free.
 
 After the tiling, the profile at one thread is 7.4 ms/frame (was 8.5), with Matvec at 156 µs/call
 (was 195), Flow 470 µs/call, Attention 101 µs/call.
+
+## After the AVX2 kernel (and what was tried next)
+
+With the fused int8->f32 AVX2 dot in place, one 4.12 s sentence at one thread:
+
+| part | before (tiled) | after (AVX2) | share now |
+|---|---|---|---|
+| Matvec | 156 µs/call | **42 µs/call** | 51% |
+| Attention | 95 µs/call | 95 µs/call | 25% |
+| Prefix (one-off) | 5.6 ms/utterance | 5.1 ms | 14% |
+| Flow head | 470 µs/call | 125 µs/call | 9% |
+| Elementwise | 1 µs/call | 1 µs/call | 0.9% |
+| per frame | 7.4 ms | **2.8 ms** | |
+
+Attention and the prefix pass are now the visible remainder. Two attempts at attention, both measured
+and both reverted:
+
+* **views instead of copies** (drop the two `to_owned()` of each head's keys and values — ~3.4 MB of
+  copying per frame): 95 -> **128 µs/call**, end-to-end 8.2x -> 7.8x. `ndarray`'s `dot` reaches BLAS
+  for owned arrays and takes a generic path for views, so removing the copies moved the work somewhere
+  slower.
+* **views + a slice softmax** (no `(1, n)` weights matrix): 95 -> 74 µs/call for the block, but no
+  end-to-end change beyond noise, because the transposed dot on a view copies internally.
+
+So attention needs a hand-written kernel (or a contiguous scratch layout that BLAS likes), not an
+`ndarray` refactor. That is future work, not a win to claim now.
+
+The prefix pass is 5.1 ms of a 0.15-0.22 s time-to-first-audio: caching its KV per (voice, text) would
+save under 4%, below the 5% bar this work is measured against, so it was not implemented.
