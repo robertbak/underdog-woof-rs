@@ -277,30 +277,6 @@ unsafe fn dot_i8_scaled_neon(q: &[i8], x: &[f32], scale: f32) -> f32 {
     sum * scale
 }
 
-/// `Σ q_i · x_i` for int8 weights against f32 activations.
-///
-/// The row scale is applied by the caller *after* the sum, which is the same product as dequantising
-/// first (`Σ (q_i·s)·x_i = s·Σ q_i·x_i`) up to float rounding — and it removes the scratch buffer the
-/// dequantise-first version writes and reads back, which profiling showed to be the cost: 195 µs for a
-/// 448x1344 row-block against 36 µs for the integer path, for the same arithmetic.
-#[inline]
-pub fn dot_i8_f32(q: &[i8], x: &[f32]) -> f32 {
-    let n = q.len().min(x.len());
-    let mut acc = [0f32; 8];
-    let chunks = n / 8;
-    for c in 0..chunks {
-        let o = c * 8;
-        for k in 0..8 {
-            acc[k] += f32::from(q[o + k]) * x[o + k];
-        }
-    }
-    let mut sum = (acc[0] + acc[1]) + (acc[2] + acc[3]) + (acc[4] + acc[5]) + (acc[6] + acc[7]);
-    for i in chunks * 8..n {
-        sum += f32::from(q[i]) * x[i];
-    }
-    sum
-}
-
 /// `out[i] = q[i] * scale`, one int8 row expanded to f32.
 #[inline]
 pub fn dequantise_row(q: &[i8], scale: f32, out: &mut [f32]) {

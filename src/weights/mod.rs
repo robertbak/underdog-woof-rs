@@ -277,16 +277,6 @@ impl Linear {
         }
     }
 
-    /// Expand one row into `out` (length `cols()`).
-    pub fn expand_row(&self, row: usize, out: &mut [f32]) {
-        match self {
-            Linear::F32(w) => out.copy_from_slice(w.row(row).as_slice().expect("dense row")),
-            Linear::Int8 { q, scales } => {
-                dequantise_row(q.row(row).as_slice().expect("dense row"), scales[row], out)
-            }
-        }
-    }
-
     /// The int8 payload of one output row (the caller only uses this on `Int8`).
     fn row_slice(&self, row: usize) -> &[i8] {
         match self {
