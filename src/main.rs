@@ -20,11 +20,38 @@ mod synth;
 use cli::{parse_args, Args};
 use synth::{die_on_sigpipe, read_piped_text, synthesise, widen_stdout_pipe, Output};
 
+/// Counts allocations while `WOOF_PROFILE` is set, so the profile can say how much of a frame is
+/// spent handing memory back and forth. One relaxed load per allocation when profiling is off.
+struct CountingAllocator;
+
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        woof_rs::profile::count_alloc(layout.size());
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        woof_rs::profile::count_alloc(layout.size());
+        unsafe { std::alloc::System.alloc_zeroed(layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        woof_rs::profile::count_alloc(new_size);
+        unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAllocator = CountingAllocator;
+
 fn main() {
+    woof_rs::profile::init_from_env();
     if let Err(e) = run() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+    woof_rs::profile::report();
 }
 
 fn run() -> Result<()> {

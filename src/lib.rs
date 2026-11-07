@@ -29,6 +29,7 @@ pub mod cpu;
 pub mod decoder;
 pub mod nn;
 pub mod normalise;
+pub mod profile;
 pub mod quality;
 pub mod rng;
 pub mod serve;

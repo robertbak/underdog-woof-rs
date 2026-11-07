@@ -235,6 +235,7 @@ impl Speech {
 
         self.ensure_capacity(prefix_rows + 1)?;
         for layer in 0..self.layers {
+            let _s = crate::profile::span(crate::profile::Part::Prefix);
             x = self.prefix_block(layer, &x, prefix_rows);
         }
 
@@ -252,18 +253,28 @@ impl Speech {
                 break;
             }
             let noise = rng.randn(self.latent) * sampling.temperature;
-            let z = &noise + &self.flow(&cond, &noise);
+            let z = {
+                let _s = crate::profile::span(crate::profile::Part::Flow);
+                &noise + &self.flow(&cond, &noise)
+            };
             frames.slice_mut(s![f, ..]).assign(&z);
             produced = f + 1;
 
-            last = self.latent_in.0.matvec(&z) + &self.latent_in.1;
+            last = {
+                let _s = crate::profile::span(crate::profile::Part::Matvec);
+                self.latent_in.0.matvec(&z) + &self.latent_in.1
+            };
             self.ensure_capacity(prefix_rows + f + 1)?;
             for layer in 0..self.layers {
                 last = self.step_block(layer, &last, prefix_rows + f);
             }
-            let (c, e) = self.condition(&last);
+            let (c, e) = {
+                let _s = crate::profile::span(crate::profile::Part::Flow);
+                self.condition(&last)
+            };
             cond = c;
             eos = e;
+            crate::profile::frame();
 
             if chunk_frames > 0 && produced - emitted >= chunk_frames {
                 on_chunk(&frames.slice(s![emitted..produced, ..]).to_owned())?;
@@ -348,12 +359,19 @@ impl Speech {
         let scale = self.attention_scale;
         let [wqkv, wo, w1, w2] = &self.blocks[layer];
 
-        let inverse = inverse_rms(x);
-        let qkv = wqkv.matvec(x).mapv(|v| v * inverse);
+        let inverse = {
+            let _s = crate::profile::span(crate::profile::Part::Elementwise);
+            inverse_rms(x)
+        };
+        let qkv = {
+            let _s = crate::profile::span(crate::profile::Part::Matvec);
+            wqkv.matvec(x).mapv(|v| v * inverse)
+        };
         let cos = self.cos.slice(s![pos, ..]).to_owned();
         let sin = self.sin.slice(s![pos, ..]).to_owned();
 
         let mut queries = Array2::<f32>::zeros((heads, head_dim));
+        let attention = crate::profile::span(crate::profile::Part::Attention);
         for h in 0..heads {
             let q = qkv.slice(s![h * head_dim..(h + 1) * head_dim]).to_owned();
             let k = qkv
@@ -387,14 +405,28 @@ impl Speech {
                 .slice_mut(s![h * head_dim..(h + 1) * head_dim])
                 .assign(&value);
         }
-        let x = x + wo.matvec(&attended);
+        drop(attention);
+        let x = {
+            let _s = crate::profile::span(crate::profile::Part::Matvec);
+            x + wo.matvec(&attended)
+        };
 
-        let gated = w1.matvec(&x);
-        let inverse = inverse_rms(&x);
+        let gated = {
+            let _s = crate::profile::span(crate::profile::Part::Matvec);
+            w1.matvec(&x)
+        };
+        let inverse = {
+            let _s = crate::profile::span(crate::profile::Part::Elementwise);
+            inverse_rms(&x)
+        };
         let mut gate = Array1::<f32>::zeros(ffn);
-        for j in 0..ffn {
-            gate[j] = silu(gated[j] * inverse) * (gated[ffn + j] * inverse);
+        {
+            let _s = crate::profile::span(crate::profile::Part::Elementwise);
+            for j in 0..ffn {
+                gate[j] = silu(gated[j] * inverse) * (gated[ffn + j] * inverse);
+            }
         }
+        let _s = crate::profile::span(crate::profile::Part::Matvec);
         x + w2.matvec(&gate)
     }
 
