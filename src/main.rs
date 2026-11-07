@@ -68,7 +68,12 @@ fn run() -> Result<()> {
     // cap the malloc arenas before any worker thread exists: each one reserves 64 MiB of address
     // space, and the pool is what creates them
     match cpu::limit_malloc_arenas(args.malloc_arenas) {
-        Some(n) => eprintln!("malloc arenas capped at {n}"),
+        Some(n) => {
+            if args.verbose {
+                eprintln!("malloc arenas capped at {n}");
+            }
+        }
+        // a warning, not progress: the user asked for something that is not available here
         None if args.malloc_arenas > 0 => {
             eprintln!("warning: mallopt(M_ARENA_MAX) not supported here")
         }
@@ -77,14 +82,16 @@ fn run() -> Result<()> {
 
     let cores = args.cpu_mask.clone().unwrap_or_else(cpu::fast_cores);
     let threads = cpu::init_pool(args.threads, &cores);
-    eprintln!(
-        "threads: {threads} on cores {}",
-        if cores.is_empty() {
-            "all".to_string()
-        } else {
-            format!("{cores:?}")
-        }
-    );
+    if args.verbose {
+        eprintln!(
+            "threads: {threads} on cores {}",
+            if cores.is_empty() {
+                "all".to_string()
+            } else {
+                format!("{cores:?}")
+            }
+        );
+    }
 
     if args.bench_dot {
         return bench_dot();
@@ -141,7 +148,9 @@ fn run() -> Result<()> {
         None => woof_rs::weights::fetch::ensure_npz(args.offline)?,
     };
     let (weights, cfg) = Weights::load_any(&model_path)?;
-    eprintln!("weights: {:.2}s", started.elapsed().as_secs_f32());
+    if args.verbose {
+        eprintln!("weights: {:.2}s", started.elapsed().as_secs_f32());
+    }
 
     let manifest = serde_json::json!({ "cfg": cfg });
     if args.serve {

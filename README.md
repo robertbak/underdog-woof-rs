@@ -180,6 +180,10 @@ cat notes.txt | woof-rs --out notes.wav                        # one utterance p
 echo "1,250 on March 3rd" | woof-rs --normalise -              # inspect the spoken form
 ```
 
+**A run is silent unless it fails.** Thread count, weight-load time, time-to-first-audio, the
+per-emission log and the summary all sit behind `--verbose`; errors always print. The transcripts
+below include `--verbose` because they are showing that output.
+
 A missing `--text` (or `-`) reads stdin, but only when stdin is actually a pipe — a bare `woof-rs` on a
 terminal still says `--text is required` rather than hanging on EOF. A trailing newline from
 `echo`/`cat` is trimmed. `say` is `tools/say.sh` installed to `~/bin`, which pipes
@@ -535,8 +539,8 @@ utterances, then concatenates). For playback that is the wrong shape, so the cra
 matching the reference — and `--stream` writes each utterance the moment it lands:
 
 ```
-$ woof-rs --model /tmp/woof-i8 --text "The review was moved to Thursday at ten. Please bring the cost
-projections." --out out.wav --stream
+$ woof-rs --verbose --model /tmp/woof-i8 --text "The review was moved to Thursday at ten. Please bring
+the cost projections." --out out.wav --stream
 first audio after 0.24s (2 utterance(s) to synthesise)
 2 utterances, 5.36s of audio, 0.82s wall (6.5x realtime)
 ```

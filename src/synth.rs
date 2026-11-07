@@ -74,6 +74,15 @@ pub fn read_piped_text(args: &mut Args) -> Result<()> {
     Ok(())
 }
 
+/// "1 utterance" / "3 utterances", because "(s)" in user-facing output is a smell.
+fn plural(n: usize, singular: &str) -> String {
+    if n == 1 {
+        format!("{n} {singular}")
+    } else {
+        format!("{n} {singular}s")
+    }
+}
+
 /// How audio leaves the process.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Output {
@@ -160,11 +169,13 @@ pub fn synthesise(
         buffered.extend_from_slice(samples);
         if first_audio.is_none() && !samples.is_empty() {
             first_audio = Some(started.elapsed().as_secs_f32());
-            eprintln!(
-                "first audio after {:.2}s ({} utterance(s) to synthesise)",
-                first_audio.unwrap_or_default(),
-                pieces
-            );
+            if args.verbose {
+                eprintln!(
+                    "first audio after {:.2}s ({} to synthesise)",
+                    first_audio.unwrap_or_default(),
+                    plural(pieces, "utterance")
+                );
+            }
         }
         Ok(())
     };
@@ -196,11 +207,13 @@ pub fn synthesise(
             for samples in rx {
                 if first_audio.is_none() {
                     first_audio = Some(started.elapsed().as_secs_f32());
-                    eprintln!(
-                        "first audio after {:.2}s ({} utterance(s) to synthesise)",
-                        first_audio.unwrap_or_default(),
-                        pieces
-                    );
+                    if args.verbose {
+                        eprintln!(
+                            "first audio after {:.2}s ({} to synthesise)",
+                            first_audio.unwrap_or_default(),
+                            plural(pieces, "utterance")
+                        );
+                    }
                 }
                 if args.verbose {
                     emitted += samples.len() as f32 / 24_000.0;
@@ -263,14 +276,16 @@ pub fn synthesise(
         std::fs::write(path, bytes)?;
     }
 
-    eprintln!(
-        "{} utterances, {:.2}s of audio, {:.2}s wall ({:.1}x realtime)",
-        utterances,
-        audio_seconds,
-        started.elapsed().as_secs_f32(),
-        audio_seconds / started.elapsed().as_secs_f32().max(1e-6)
-    );
-    if output != Output::StreamPcm {
+    if args.verbose {
+        eprintln!(
+            "{}, {:.2}s of audio, {:.2}s wall ({:.1}x realtime)",
+            plural(utterances, "utterance"),
+            audio_seconds,
+            started.elapsed().as_secs_f32(),
+            audio_seconds / started.elapsed().as_secs_f32().max(1e-6)
+        );
+    }
+    if output != Output::StreamPcm && args.verbose {
         eprintln!("wrote {}", args.out.display());
     }
     Ok(())

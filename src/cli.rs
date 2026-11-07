@@ -44,8 +44,9 @@ OPTIONS:
     --pcm-stdout           with --stream, write raw 16-bit PCM to stdout instead of a WAV
     --first-max <N>        with --stream, shorten the first utterance to N characters
     --retries <N>          extra draws per utterance when a take fails the guard (default 3)
-    --verbose, -v          log every emission: cumulative audio and wall time, from which playback
-                           starvation is arithmetic (audio must stay ahead of wall - first audio)
+    --verbose, -v          say what it is doing: thread count, weight load time, time to first audio,
+                           a line per emission, and the summary. Off by default, so a run is silent
+                           unless it fails (errors are always printed)
     --max-chars <N>        refuse input longer than N characters (0 = no limit). The text is split
                            into sentences and streamed one at a time, so this is a guard, not a
                            memory limit -- the HTTP server keeps its own 4000 unless this is set
