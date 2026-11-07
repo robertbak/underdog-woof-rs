@@ -281,10 +281,20 @@ voice/text prefix (5.1 ms per utterance, worth under 4% of first audio), and a t
 nothing (7.0-7.9x for 4, 6 and auto, i.e. noise). All three are recorded as future work rather than
 claimed.
 
-Two coverage gaps stated rather than papered over: the Galaxy Tab S9 was not attached for this round,
-so there is no Android number here (the AVX2 path only applies to x86_64; ARM still uses the tiled
-fallback), and the N150 NAS measured 1.4x against 1.3x before at a *different* load, which is not a
-regression but is not a clean comparison either.
+**On ARM the gain is smaller, and measured.** The Galaxy Tab S9 (aarch64, 4 threads, interleaved
+against the same binary built from the previous tag):
+
+| | before (v0.1.2) | after |
+|---|---|---|
+| bench corpus | 3.2-3.3x realtime (15.7-16.0 s) | **3.8-3.9x** (13.2-13.5 s) |
+| first audio | 0.33 / 0.35 / 0.41 s | 0.31 / 0.35 / 0.41 s |
+
+That is +19% rather than +65%, as expected: the AVX2 kernel is x86_64-only, so the tablet gets only the
+tiled dequantise and the decoder overlap. The NEON equivalent (widen `int8x8` to `int32x8`, convert,
+`vfmaq_f32`) is the obvious next step there — the x86 version of exactly that change was worth 30%.
+
+The other gap: the N150 NAS measured 1.4x against 1.3x before at a *different* load, which is no
+regression but not a clean comparison either.
 
 ## Threads: default 4
 
