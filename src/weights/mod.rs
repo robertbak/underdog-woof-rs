@@ -287,6 +287,28 @@ impl Linear {
         }
     }
 
+    /// The int8 payload of one output row (the caller only uses this on `Int8`).
+    fn row_slice(&self, row: usize) -> &[i8] {
+        match self {
+            Linear::Int8 { q, .. } => {
+                // the payload is loaded contiguous (from_shape_vec), so slice it directly rather than
+                // going through a row view whose lifetime ends with the temporary
+                let cols = q.ncols();
+                let flat = q.as_slice().expect("payload is contiguous");
+                &flat[row * cols..(row + 1) * cols]
+            }
+            Linear::F32(_) => unreachable!("row_slice on f32 weights"),
+        }
+    }
+
+    /// The per-output-row scale of an int8 row.
+    fn row_scale(&self, row: usize) -> f32 {
+        match self {
+            Linear::Int8 { scales, .. } => scales[row],
+            Linear::F32(_) => unreachable!("row_scale on f32 weights"),
+        }
+    }
+
     /// Materialise the matrix; the batched path hands this to sgemm, which is worth the copy
     /// because it runs once per sentence.
     pub fn to_dense(&self) -> Array2<f32> {
@@ -320,26 +342,50 @@ impl Linear {
                 return int8_matvec(q, scales, x);
             }
         }
+
+        // int8 weights against f32 activations, dequantised a tile at a time into a stack buffer.
+        //
+        // Three variants were measured on this shape (448x1344, one core):
+        //   * dequantise the whole row into a heap scratch, then dot  — 195 us, and the scratch wrote
+        //     2.4 MB to L2 per call
+        //   * dequantise inside the dot (`f32::from(q[i]) * x[i]`)    — 213 us: the per-element widen
+        //     blocks the FMA path the contiguous f32 dot gets
+        //   * this: 256-float tiles, so the dequantised block stays in L1 and still feeds vectorised
+        //     FMA — see benchmarks/profile.md for the numbers
+        const TILE: usize = 256;
         let (rows, cols) = (self.rows(), self.cols());
         let activation = x.as_slice().expect("dense activation");
         let mut out = vec![0f32; rows];
+        let row_dot = |row: usize| -> f32 {
+            let w = self.row_slice(row);
+            let scale = self.row_scale(row);
+            let mut tile = [0f32; TILE];
+            let mut acc = 0f32;
+            let mut offset = 0;
+            while offset < cols {
+                let n = TILE.min(cols - offset);
+                let q = &w[offset..offset + n];
+                for (slot, value) in tile[..n].iter_mut().zip(q.iter()) {
+                    *slot = f32::from(*value) * scale;
+                }
+                acc += dot(&tile[..n], &activation[offset..offset + n]);
+                offset += n;
+            }
+            acc
+        };
 
         if rows * cols < 200_000 {
-            let mut scratch = vec![0f32; cols];
             for (row, slot) in out.iter_mut().enumerate() {
-                self.expand_row(row, &mut scratch);
-                *slot = dot(&scratch, activation);
+                *slot = row_dot(row);
             }
         } else {
-            out.par_chunks_mut(32).enumerate().for_each_init(
-                || vec![0f32; cols],
-                |scratch, (chunk_index, chunk)| {
+            out.par_chunks_mut(32)
+                .enumerate()
+                .for_each(|(chunk_index, chunk)| {
                     for (k, slot) in chunk.iter_mut().enumerate() {
-                        self.expand_row(chunk_index * 32 + k, scratch);
-                        *slot = dot(scratch, activation);
+                        *slot = row_dot(chunk_index * 32 + k);
                     }
-                },
-            );
+                });
         }
         Array1::from(out)
     }
@@ -348,6 +394,13 @@ impl Linear {
     pub fn matmul_t(&self, x: &Array2<f32>) -> Array2<f32> {
         x.dot(&self.to_dense().t())
     }
+}
+
+thread_local! {
+    /// One dequantisation buffer per worker thread, grown as needed and never freed until the thread
+    /// ends. A matvec runs tens of times per frame, so allocating this per call was most of the
+    /// per-frame allocation churn.
+    static SCRATCH: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// W8A8: quantise the activation once, then accumulate each row as i32 and scale once at the end.

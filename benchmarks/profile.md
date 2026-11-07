@@ -48,6 +48,28 @@ allocations: 6,593 per frame, 13.6 MiB per frame.
    both allocate per call: `to_owned()` per head per frame, `Array2::zeros` per layer, `mapv` chains.
 5. Elementwise chains are free (0.2%); fusing them is not worth the churn.
 
-Order of work implied by the numbers: fuse the scale into the dot (kills most of the matvec cost and a
-large share of the allocations) → remove the remaining per-frame allocations in attention/flow → then
-consider overlapping the decoder with the sampler.
+Order of work implied by the numbers: attack the matvec's *scratch traffic* → then the flow head and
+attention → then overlapping the decoder with the sampler.
+
+## What was tried on the matvec, and what the measurements said
+
+All three variants compute the same product; they differ in where the dequantised values live. One
+core, 448x1344 row block, `--threads 4` end-to-end on the bench corpus:
+
+| variant | matvec µs/call | end-to-end | verdict |
+|---|---|---|---|
+| dequantise the whole row into a heap scratch, then dot (original) | 195 | 6.3x | the baseline |
+| dequantise inside the dot loop: `Σ f32::from(q_i)·x_i`, scale after | 213 | 5.8x (at equal load: unchanged) | **rejected**: the per-element i8→f32 widen blocks the FMA path that a contiguous f32 dot gets |
+| **tiles of 256 floats into a stack buffer** (chosen) | **156** | **7.1-7.4x** | kept: the dequantised block stays in L1 instead of streaming 2.4 MB of scratch through L2 per call |
+| tile sizes 128 / 512 / 1024 | — | 7.0-7.4x | indistinguishable; 256 is 1 KiB, which is the reason it is 256 |
+
+Also measured and rejected: removing the per-call *allocation* of the scratch (a thread-local reusable
+buffer). It cut allocations per frame from 6,880 to 6,551 and changed the wall time by nothing —
+interleaved A/B against the previous binary gave 6.2/6.2, 6.3/6.3, 6.5/6.6. The allocator is not the
+bottleneck here, so the remaining 6,551 allocations per frame are not worth chasing on their own.
+
+Side effect worth recording: the tiled summation order is *closer* to numpy than the row-at-a-time one,
+so decoder parity improved from 85.3 dB to **86.7 dB** for free.
+
+After the tiling, the profile at one thread is 7.4 ms/frame (was 8.5), with Matvec at 156 µs/call
+(was 195), Flow 470 µs/call, Attention 101 µs/call.
