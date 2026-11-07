@@ -3,8 +3,12 @@
 #
 #   say "Your order ships on March 3rd."          # bare text, or --text "..."
 #   say --responsive "Longer text, heard quickly."  # flags and text together
+#   say --w8a8 "Faster, a different take."          # int8 activations: ~40% faster (see README)
 #   echo "Piped text." | say                        # or a whole file: cat notes.txt | say
 #   tools/say.sh --voice mira --text "…"            # from the repo, same script
+#
+# No weights needed: with nothing to point at, woof-rs fetches the reference .npz from upstream once
+# and caches it. Point it elsewhere with WOOF_MODEL=/path/to/woof_int8.npz.
 #
 # `--responsive` (or WOOF_RESPONSIVE=1) turns on the low-latency preset: the first utterance is
 # decoded every 13 latent frames (~0.5 s of audio) with a single take, which takes time-to-first-
@@ -23,14 +27,17 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin=${WOOF_RS_BIN:-$(command -v woof-rs || echo "$here/target/release/woof-rs")}
-model=${WOOF_MODEL:-$here/models/woof-i8}
+# weights: WOOF_MODEL, else a copy beside the checkout, else let the binary fetch and cache them
+model_args=()
+if [ -n "${WOOF_MODEL:-}" ]; then
+    model_args=(--model "$WOOF_MODEL")
+elif [ -f "$here/models/woof_int8.npz" ]; then
+    model_args=(--model "$here/models/woof_int8.npz")
+elif [ -f "$here/models/woof-i8.json" ]; then
+    model_args=(--model "$here/models/woof-i8")
+fi
 
 [ -x "$bin" ] || { echo "say.sh: build first (cargo build --release) or set WOOF_RS_BIN" >&2; exit 1; }
-[ -f "$model.json" ] || {
-    echo "say.sh: no weights at $model" >&2
-    echo "  generate them with tools/export.py, then set WOOF_MODEL=/path/to/woof-i8" >&2
-    exit 1
-}
 
 # 24 kHz mono 16-bit signed little-endian, which is what the model emits.
 if command -v pw-cat >/dev/null; then
@@ -58,4 +65,4 @@ if [ -n "${WOOF_RESPONSIVE:-}" ] || [ -n "${responsive:-}" ]; then
     preset=(--chunk-frames 13 --no-retry-first)
 fi
 
-"$bin" --model "$model" "${preset[@]}" "${args[@]}" --pcm-stdout --stream 2> >(sed 's/^/woof: /' >&2) | "${player[@]}"
+"$bin" "${model_args[@]}" "${preset[@]}" "${args[@]}" --pcm-stdout --stream 2> >(sed 's/^/woof: /' >&2) | "${player[@]}"
