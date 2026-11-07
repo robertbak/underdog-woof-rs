@@ -11,6 +11,13 @@ keywords = ["tts", "text-to-speech", "int8", "inference", "streaming"]
 categories = ["multimedia::audio", "science", "command-line-utilities"]
 
 [dependencies]
+# reading the reference's .npz directly, so no Python is needed to run the model: its entries are
+# stored (uncompressed), so no deflate backend is wanted
+zip = { version = "2", default-features = false }
+# verifying a downloaded weights file
+sha2 = "0.10"
+# the .npz stores some decoder tensors as float16, which the reference casts to f32 on load
+half = { version = "2", default-features = false }
 # fancy-regex understands lookaround/backrefs, which the reference normaliser uses throughout
 # (63 lookaround constructs); the plain `regex` crate rejects them.
 fancy-regex = "0.17"

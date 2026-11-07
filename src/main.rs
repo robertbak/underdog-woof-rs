@@ -106,11 +106,14 @@ fn run() -> Result<()> {
     let _ = backend.name();
 
     let started = std::time::Instant::now();
-    let weights = Weights::load(&args.model)?;
+    let model_path = match &args.model {
+        Some(path) => path.clone(),
+        None => woof_rs::weights::fetch::ensure_npz(args.offline)?,
+    };
+    let (weights, cfg) = Weights::load_any(&model_path)?;
     eprintln!("weights: {:.2}s", started.elapsed().as_secs_f32());
 
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(args.model.with_extension("json"))?)?;
+    let manifest = serde_json::json!({ "cfg": cfg });
     if args.serve {
         if args.port == 0 {
             return Err("--serve needs --port".into());

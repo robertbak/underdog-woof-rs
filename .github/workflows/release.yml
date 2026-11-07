@@ -117,13 +117,17 @@ jobs:
           body: |
             Prebuilt `woof-rs` binaries.
 
-            **The model weights are not included.** They are generated from an upstream Underdog
-            Woof checkout and are not ours to redistribute:
+            **The model weights are not included** — they are Underdog's, and fetching them from
+            upstream is the honest way to get them. The binary does that itself:
 
             ```bash
-            python tools/export.py --repo /path/to/underdog_woof --out ./models/woof-i8
-            ./woof-rs --model ./models/woof-i8 "Your order ships on March 3rd." --out hi.wav
+            ./woof-rs "Your order ships on March 3rd." --out hi.wav
+            # downloads woof_int8.npz from Underdog's Hugging Face repo once, verifies the pinned
+            # SHA-256, caches it under ~/.cache/woof-rs; --offline refuses to touch the network
             ```
+
+            To read a file you already have instead: `--model /path/to/woof_int8.npz` (no conversion
+            or Python needed), or `tools/export.py` for the flat-blob layout.
 
             Every archive carries `LICENSE` and `NOTICE` unchanged. This is a Derivative work under
             the Underdog Non-Commercial License 1.0: non-commercial use only, with credit; commercial

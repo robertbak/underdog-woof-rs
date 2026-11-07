@@ -33,6 +33,9 @@ pub struct Q8Meta {
 }
 
 /// All tensors, keyed by name.
+pub mod fetch;
+mod npz;
+
 pub struct Weights {
     f32s: HashMap<String, ArrayD<f32>>,
     int8s: HashMap<String, Array2<i8>>,
@@ -42,6 +45,32 @@ pub struct Weights {
 }
 
 impl Weights {
+    pub(crate) fn empty() -> Self {
+        Weights {
+            f32s: HashMap::new(),
+            int8s: HashMap::new(),
+            row_scales: HashMap::new(),
+            group_scales: HashMap::new(),
+            meta: HashMap::new(),
+        }
+    }
+
+    /// Load either form: the reference's `.npz` directly (no Python needed), or the exported
+    /// `<prefix>.json` + `<prefix>.bin`. Returns the weights and the `cfg` the model runs with.
+    pub fn load_any(path: &std::path::Path) -> Result<(Self, serde_json::Value)> {
+        let is_npz = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("npz"))
+            .unwrap_or(false);
+        if is_npz {
+            return npz::load(path);
+        }
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.with_extension("json"))?)?;
+        Ok((Self::load(path)?, manifest["cfg"].clone()))
+    }
+
     /// Load `<prefix>.json` + `<prefix>.bin` as written by `tools/export.py`.
     pub fn load(prefix: &std::path::Path) -> Result<Self> {
         let manifest_path = prefix.with_extension("json");
@@ -49,13 +78,7 @@ impl Weights {
         let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
         let blob = std::fs::read(&blob_path)?;
 
-        let mut weights = Weights {
-            f32s: HashMap::new(),
-            int8s: HashMap::new(),
-            row_scales: HashMap::new(),
-            group_scales: HashMap::new(),
-            meta: HashMap::new(),
-        };
+        let mut weights = Weights::empty();
 
         let tensors = manifest["tensors"]
             .as_object()

@@ -7,8 +7,6 @@ use std::path::PathBuf;
 
 use woof_rs::{Result, Sampling};
 
-const DEFAULT_MODEL: &str = "/tmp/woof-i8";
-
 const USAGE: &str = "\
 woof-rs — Underdog Woof in Rust
 
@@ -19,8 +17,10 @@ OPTIONS:
     --text <TEXT>          text to speak. Omit it (or pass -) to read it from stdin, so text can be
                            piped: echo hello | woof-rs --out hi.wav
     --out <PATH>           output WAV (default: out.wav)
-    --model <PREFIX>       weights prefix, as written by tools/export.py
-                           (default: /tmp/woof-i8 -> .bin + .json)
+    --model <PATH>         weights: the reference's woof_int8.npz directly (no Python needed), or a
+                           prefix written by tools/export.py -> .bin + .json.
+                           Omitted: the cached download is used, and fetched if absent
+    --offline              never download; fail if the weights are not already cached
     --voice <NAME>         juno | mira (default: juno)
     --seed <N>             sampler seed (default: 0); same text + seed -> identical audio
     --temp <F>             sampling temperature (default: 0.5)
@@ -78,11 +78,13 @@ OPTIONS:
 pub struct Args {
     pub text: String,
     pub out: PathBuf,
-    pub model: PathBuf,
+    /// `None` means "use the cached download, fetching it if needed"
+    pub model: Option<PathBuf>,
     pub voice: String,
     pub seed: u32,
     pub sampling: Sampling,
     pub threads: usize,
+    pub offline: bool,
     pub verbose: bool,
     pub malloc_arenas: usize,
     pub max_chars: usize,
@@ -117,12 +119,13 @@ impl Default for Args {
         Args {
             text: String::new(),
             out: PathBuf::from("out.wav"),
-            model: PathBuf::from(DEFAULT_MODEL),
+            model: None,
             voice: "juno".to_string(),
             seed: 0,
             sampling: Sampling::default(),
             // four: synthesis must beat playback with room to spare (see --threads)
             threads: 4,
+            offline: false,
             verbose: false,
             malloc_arenas: 0,
             max_chars: 0,
@@ -184,7 +187,8 @@ pub fn parse_args() -> Result<Option<Args>> {
             }
             "--text" => args.text = value()?,
             "--out" => args.out = PathBuf::from(value()?),
-            "--model" => args.model = PathBuf::from(value()?),
+            "--model" => args.model = Some(PathBuf::from(value()?)),
+            "--offline" => args.offline = true,
             "--voice" => args.voice = value()?,
             "--seed" => args.seed = value()?.parse().map_err(|_| "--seed expects a number")?,
             "--temp" => {

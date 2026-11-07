@@ -55,21 +55,35 @@ whoever reads it next:
 
 ```bash
 git clone https://github.com/robertbak/underdog-woof-rs && cd underdog-woof-rs
-cargo build --release                       # CPU build, 4.5 MiB
-cargo test --release                        # 47 unit tests
+cargo build --release                       # CPU build, 4.1 MiB
+cargo test --release                        # 50 unit tests
 tools/install.sh                            # build -> ~/bin/woof-rs (+ say.sh) -> cargo clean
 woof-rs --version                           # name, version and build features
 
-# weights, generated from an upstream checkout (not redistributed here):
-python tools/export.py --repo /path/to/underdog_woof --out /tmp/woof-i8
+# no weights given: it fetches them from upstream once, verifies the SHA-256, caches them
+woof-rs "Your order ships on March 3rd." --out hi.wav
 
-woof-rs --model /tmp/woof-i8 "Your order ships on March 3rd." --out hi.wav
+# or point it at a file you already have (the reference's own .npz needs no conversion)
+woof-rs --model /path/to/woof_int8.npz "Your order ships on March 3rd." --out hi.wav
 woof-rs --model /tmp/woof-i8 "Piped text." --pcm-stdout --stream | pw-cat --playback --raw \
     --format=s16 --rate=24000 --channels=1 -
 woof-rs --model /tmp/woof-i8 --serve --port 5816 --voice juno
 ```
 
-Python is only needed for the export step and for the parity/normaliser harnesses in `tools/`.
+**No Python is needed to run the model.** With no `--model`, the first run downloads the reference's
+`woof_int8.npz` from Underdog's Hugging Face repository into `$XDG_CACHE_HOME/woof-rs` (or
+`~/.cache/woof-rs`), verifies the pinned SHA-256 and caches it — 38.7 MB, once. It is fetched from
+upstream rather than shipped here because the weights are theirs, not ours to redistribute; `--offline`
+refuses to touch the network, and `--model` skips all of it. The download uses `curl` or `wget` rather
+than a TLS stack, because pulling in rustls to fetch one file would cost more binary than the whole
+synthesiser.
+
+`--model` also takes the reference's `woof_int8.npz` directly:
+its entries are stored (uncompressed) `.npy` files and `__tree__` is a JSON description of the nesting,
+so the loader reads it in Rust — same weights, bit-identical audio, 0.03 s to load. `tools/export.py`
+still exists for the alternate layout (one flat blob plus a small manifest, 0.02 s to load, one file
+per tensor instead of a 40 MB archive) and for the `--f32` A/B of dequantised weights, but it is
+optional now. Python is needed only for the parity and normaliser harnesses.
 
 ## Layout
 
